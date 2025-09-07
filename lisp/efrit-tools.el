@@ -44,7 +44,15 @@
 (require 'json)
 (require 'cl-lib)
 (require 'auth-source)
-(require 'efrit-log)
+
+;; Load efrit-log if it exists, otherwise use minimal logging
+(condition-case nil
+    (require 'efrit-log)
+  (error 
+   (defun efrit-log (level format-string &rest args)
+     "Fallback logging function when efrit-log is not available."
+     (when (memq level '(warn error))
+       (message (apply #'format format-string args))))))
 
 ;; Declare functions from efrit-do.el to avoid warnings
 (declare-function efrit-do-todo-item-status "efrit-do")
@@ -55,6 +63,8 @@
 ;; Declare functions from efrit-common.el
 (declare-function efrit-common-get-api-key "efrit-common")
 (declare-function efrit-common-truncate-string "efrit-common")
+
+;; efrit-log is loaded above or defined as fallback
 
 ;;; Customization
 
@@ -438,7 +448,14 @@ Arguments:
                    (call-start (match-beginning 0))
                    (call-end (match-end 0))
                    (result (condition-case eval-err
-                               (efrit-tools-eval-sexp elisp-code)
+                               (progn
+                                 ;; Show elisp eval in progress if available
+                                 (when (fboundp 'efrit-progress-show-elisp-eval)
+                                   (require 'efrit-progress))
+                                 (let ((eval-result (efrit-tools-eval-sexp elisp-code)))
+                                   (when (fboundp 'efrit-progress-show-elisp-eval)
+                                     (efrit-progress-show-elisp-eval elisp-code eval-result))
+                                   eval-result))
                              (error
                               (format "Error in Elisp evaluation: %s" 
                                      (error-message-string eval-err))))))

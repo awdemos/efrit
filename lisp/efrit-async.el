@@ -17,17 +17,19 @@
 (require 'cl-lib)
 (require 'json)
 (require 'url)
-(require 'efrit-log)
+;; (require 'efrit-log) ; TODO: Fix circular dependency
+(declare-function efrit-log "efrit-log")
 (require 'efrit-common)
 (require 'efrit-context)
 (require 'efrit-protocol)
 (require 'efrit-performance)
+(require 'efrit-progress)
 
 ;; Forward declarations
 (declare-function efrit-tools-eval-sexp "efrit-tools")
 (declare-function efrit-do--command-system-prompt "efrit-do")
 (defvar efrit-do--tools-schema)
-(defvar efrit-model)
+(defvar efrit-default-model)  ; From efrit-config
 
 (defvar efrit-async--active-session nil
   "Currently active session.")
@@ -102,9 +104,15 @@
       (efrit-log 'info "Started session %s" session-id)))
   
   (when efrit-async--active-session
-    ;; Store the entry - note work log stores (result . code) pairs
-    (push (cons result elisp) 
-          (efrit-session-work-log efrit-async--active-session))
+    ;; Include TODO state in the work log entry
+    (let* ((todo-snapshot (when (bound-and-true-p efrit-do--current-todos)
+                           (mapcar (lambda (todo)
+                                    (list (efrit-do-todo-item-id todo)
+                                          (efrit-do-todo-item-content todo)
+                                          (efrit-do-todo-item-status todo)))
+                                  efrit-do--current-todos)))
+           (entry (list result elisp todo-snapshot)))
+      (push entry (efrit-session-work-log efrit-async--active-session)))
     
     ;; Limit work log size to prevent memory growth
     (let ((work-log (efrit-session-work-log efrit-async--active-session)))
@@ -112,18 +120,26 @@
         (setf (efrit-session-work-log efrit-async--active-session)
               (seq-take work-log efrit-async-max-work-log-entries))))
     
-    ;; Log with context info
-    (let ((context-state (efrit-context-capture-state)))
-      (efrit-log 'debug "Session %s: step %d in buffer %s at point %d" 
+    ;; Log with context info and TODO status
+    (let ((context-state (efrit-context-capture-state))
+          (todo-stats (when (bound-and-true-p efrit-do--current-todos)
+                       (let ((total (length efrit-do--current-todos))
+                             (completed (seq-count (lambda (todo)
+                                                   (eq (efrit-do-todo-item-status todo) 'completed))
+                                                 efrit-do--current-todos)))
+                         (format " [TODOs: %d/%d]" completed total)))))
+      (efrit-log 'debug "Session %s: step %d in buffer %s at point %d%s" 
                  session-id
                  (length (efrit-session-work-log efrit-async--active-session))
                  (efrit-context-state-buffer-name context-state)
-                 (efrit-context-state-point context-state)))))
+                 (efrit-context-state-point context-state)
+                 (or todo-stats "")))))
 
 (defun efrit-async--complete-session (session-id result)
   "Mark session SESSION-ID complete with final RESULT and process queue."
   (efrit-async--show-progress "Complete!")
   (when efrit-async--active-session
+    (efrit-progress-end-session (efrit-session-id efrit-async--active-session) t)
     (let ((elapsed (float-time (time-since (efrit-session-start-time 
                                            efrit-async--active-session))))
           (steps (length (efrit-session-work-log efrit-async--active-session)))
@@ -312,6 +328,9 @@ CALLBACK is called with the parsed response or error information."
                    (error-message-string error))))
     (efrit-async--show-progress "Error!")
     (message "Efrit error: %s" message)
+    (efrit-progress-show-message message 'error)
+    (when efrit-async--active-session
+      (efrit-progress-end-session (efrit-session-id efrit-async--active-session) nil))
     
     ;; Clear session on error
     (setq efrit-async--active-session nil)
@@ -352,7 +371,9 @@ CALLBACK will be called with the final result string."
                    ;; Handle text content
                    ((string= type "text")
                     (when-let* ((text (gethash "text" item)))
-                      (setq result-text (concat result-text text))))
+                      (setq result-text (concat result-text text))
+                      ;; Show Claude's message in progress
+                      (efrit-progress-show-message text 'claude)))
                    
                    ;; Handle tool use - delegate to efrit-do's tool execution
                    ((string= type "tool_use")
@@ -367,7 +388,9 @@ CALLBACK will be called with the final result string."
                       ;; Track tool execution for work log
                       (when efrit-async--active-session
                         (push (list tool-result 
-                                  (format "%S" tool-input))
+                                  (if (hash-table-p tool-input)
+                                      (json-encode tool-input)
+                                    (format "%S" tool-input)))
                               tool-results))))))))
             
             ;; Handle session continuation or completion
@@ -399,8 +422,12 @@ CALLBACK will be called with the final result string."
 (defun efrit-async--execute-tool (tool-item)
   "Execute a tool using the shared protocol.
 TOOL-ITEM is the tool_use object from Claude's response."
-  (let ((tool-name (cdr (assoc 'name tool-item)))
-        (input-data (cdr (assoc 'input tool-item))))
+  (let ((tool-name (if (hash-table-p tool-item)
+                       (gethash "name" tool-item)
+                     (cdr (assoc 'name tool-item))))
+        (input-data (if (hash-table-p tool-item)
+                       (gethash "input" tool-item)
+                     (cdr (assoc 'input tool-item)))))
     (efrit-protocol-execute-tool tool-name input-data)))
 
 ;;; Main Async Interface
@@ -413,7 +440,7 @@ CALLBACK is the original completion callback."
          (original-command (efrit-session-command session))
          (system-prompt (efrit-async--build-system-prompt session-id work-log))
          (request-data
-          `(("model" . efrit-model)
+          `(("model" . ,efrit-default-model)
             ("max_tokens" . 8192)
             ("temperature" . 0.0)
             ("messages" . [(("role" . "user")
@@ -466,10 +493,11 @@ This is the async version of efrit-do's command execution."
           (efrit-performance-touch-session session-id)
           
           (efrit-async--show-progress "Processing...")
+          (efrit-progress-start-session session-id command)
           
           (let* ((system-prompt (efrit-async--build-system-prompt session-id "[]"))
              (request-data
-              `(("model" . efrit-model)
+              `(("model" . ,efrit-default-model)
                 ("max_tokens" . 8192)
                 ("temperature" . 0.0)
                 ("messages" . [(("role" . "user")
@@ -532,6 +560,80 @@ If SESSION-ID is provided, include session protocol with WORK-LOG."
                               (length efrit-async--session-queue))))
     (setq efrit-async--session-queue nil)
     (message "Efrit: Queue cleared")))
+
+;;;###autoload
+(defun efrit-async-show-todos ()
+  "Show current TODOs for active session."
+  (interactive)
+  (require 'efrit-do)
+  (if (and efrit-async--active-session
+           (bound-and-true-p efrit-do--current-todos)
+           efrit-do--current-todos)
+      (let ((buffer (get-buffer-create "*Efrit Session TODOs*")))
+        (with-current-buffer buffer
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert "Efrit Session TODOs\n")
+            (insert "==================\n\n")
+            (insert (format "Session: %s\n" 
+                           (efrit-session-id efrit-async--active-session)))
+            (insert (format "Command: %s\n\n"
+                           (efrit-session-command efrit-async--active-session)))
+            
+            ;; Show statistics
+            (let ((total (length efrit-do--current-todos))
+                  (completed (seq-count (lambda (todo)
+                                         (eq (efrit-do-todo-item-status todo) 'completed))
+                                       efrit-do--current-todos))
+                  (in-progress (seq-count (lambda (todo)
+                                           (eq (efrit-do-todo-item-status todo) 'in-progress))
+                                         efrit-do--current-todos))
+                  (pending (seq-count (lambda (todo)
+                                       (eq (efrit-do-todo-item-status todo) 'todo))
+                                     efrit-do--current-todos)))
+              (insert (format "Progress: %d/%d completed (%d%%), %d in progress, %d pending\n\n"
+                             completed total 
+                             (if (> total 0) (/ (* 100 completed) total) 0)
+                             in-progress pending)))
+            
+            ;; Show TODO list
+            (insert "TODO List:\n")
+            (insert "─────────\n")
+            (dolist (todo efrit-do--current-todos)
+              (let* ((status (efrit-do-todo-item-status todo))
+                     (icon (pcase status
+                             ('todo "☐")
+                             ('in-progress "⟳")
+                             ('completed "☑")))
+                     (face (pcase status
+                             ('todo 'default)
+                             ('in-progress 'font-lock-warning-face)
+                             ('completed 'font-lock-comment-face))))
+                (insert (propertize 
+                        (format "%s [%s] %s\n    ID: %s\n"
+                               icon
+                               (upcase (symbol-name (efrit-do-todo-item-priority todo)))
+                               (efrit-do-todo-item-content todo)
+                               (efrit-do-todo-item-id todo))
+                        'face face))))
+            
+            (goto-char (point-min)))
+          (special-mode))
+        ;; Display buffer with optional shrink-to-fit
+        (require 'efrit-do)
+        (let ((window (display-buffer buffer
+                                     (if (bound-and-true-p efrit-do-auto-shrink-todo-buffers)
+                                         '((display-buffer-reuse-window
+                                            display-buffer-below-selected)
+                                           (window-height . fit-window-to-buffer)
+                                           (window-parameters . ((no-delete-other-windows . t))))
+                                       '(display-buffer-reuse-window
+                                         display-buffer-below-selected)))))
+          (when (and window (bound-and-true-p efrit-do-auto-shrink-todo-buffers))
+            (fit-window-to-buffer window nil nil 20 nil))))
+    (if efrit-async--active-session
+        (message "No TODOs for current session")
+      (message "No active Efrit session"))))
 
 (provide 'efrit-async)
 ;;; efrit-async.el ends here
