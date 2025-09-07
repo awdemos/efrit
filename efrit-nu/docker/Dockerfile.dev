@@ -1,0 +1,53 @@
+# Development container for efrit-nu
+FROM efrit-nu:base
+
+# Switch back to root for development tools installation
+USER root
+
+# Install development dependencies
+RUN apt-get update && apt-get install -y \
+    vim \
+    nano \
+    jq \
+    tree \
+    htop \
+    strace \
+    netcat \
+    tcpdump \
+    iputils-ping \
+    telnet \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Docker CLI for container-in-container operations
+RUN curl -fsSL https://get.docker.com | sh && \
+    usermod -aG docker efrit
+
+# Install development utilities
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && \
+    install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+
+# Set up development environment
+COPY docker/dev-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/dev-entrypoint.sh
+
+# Create development workspace
+RUN mkdir -p /workspace && chown efrit:efrit /workspace
+
+# Switch back to efrit user
+USER efrit
+
+# Set up development Nushell configuration
+RUN echo 'export def dev-reload [] { source /app/scripts/**/*.nu }' >> /home/efrit/.config/nushell/config.nu && \
+    echo 'export def dev-test [] { nu -c "use tests/unit/*.nu; run-all-tests" }' >> /home/efrit/.config/nushell/config.nu && \
+    echo 'export def dev-logs [] { tail -f /app/data/logs/efrit-nu.log }' >> /home/efrit/.config/nushell/config.nu
+
+# Development environment variables
+ENV EFRIT_ENV=development
+ENV EFRIT_LOG_LEVEL=debug
+ENV EFRIT_HOT_RELOAD=true
+
+WORKDIR /workspace
+
+# Development entrypoint
+ENTRYPOINT ["/usr/local/bin/dev-entrypoint.sh"]
+CMD ["nu"]

@@ -1,0 +1,104 @@
+# LLM Provider Configurations for Efrit-Nu
+
+[anthropic]
+name = "Claude (Anthropic)"
+type = "anthropic"
+base_url = "https://api.anthropic.com"
+api_version = "2023-06-01"
+model = "claude-3-5-sonnet-20241022"
+max_tokens = 8192
+temperature = 0.0
+timeout = 30
+rate_limit_per_minute = 50
+rate_limit_per_day = 1000
+headers = { "anthropic-version" = "2023-06-01" }
+
+# API key should be set via environment variable ANTHROPIC_API_KEY
+# or stored securely in auth file
+
+[anthropic.retry]
+max_attempts = 3
+backoff_factor = 2.0
+max_delay = 60
+
+[anthropic.tools]
+support_tool_calls = true
+max_tool_calls_per_request = 10
+tool_call_timeout = 30
+
+[ollama]
+name = "Ollama (Local)"
+type = "ollama"
+base_url = "http://localhost:11434"
+api_version = "v1"
+model = "llama3.2:latest"
+max_tokens = 4096
+temperature = 0.0
+timeout = 60
+rate_limit_per_minute = 100
+rate_limit_per_day = 10000
+
+# No API key required for local Ollama
+
+[ollama.retry]
+max_attempts = 2
+backoff_factor = 1.5
+max_delay = 30
+
+[ollama.tools]
+support_tool_calls = false  # Depends on model
+max_tool_calls_per_request = 5
+tool_call_timeout = 45
+
+[openai]
+name = "OpenAI GPT"
+type = "openai"
+base_url = "https://api.openai.com/v1"
+api_version = "v1"
+model = "gpt-4o"
+max_tokens = 4096
+temperature = 0.0
+timeout = 30
+rate_limit_per_minute = 60
+rate_limit_per_day = 1000
+
+# API key should be set via environment variable OPENAI_API_KEY
+
+[openai.retry]
+max_attempts = 3
+backoff_factor = 2.0
+max_delay = 60
+
+[openai.tools]
+support_tool_calls = true
+max_tool_calls_per_request = 10
+tool_call_timeout = 30
+
+# Provider selection rules
+[routing]
+default_provider = "anthropic"
+fallback_order = ["anthropic", "openai", "ollama"]
+
+# Route based on request type
+[routing.by_type]
+command = "anthropic"
+chat = "anthropic" 
+eval = "ollama"  # Use local model for simple evaluations
+
+# Route based on request size
+[routing.by_size]
+small = "ollama"      # < 1000 tokens
+medium = "anthropic"  # 1000-5000 tokens
+large = "openai"      # > 5000 tokens
+
+# Health check configuration
+[health_check]
+enabled = true
+interval = 300  # seconds
+timeout = 10    # seconds
+retry_failed_after = 900  # 15 minutes
+
+[health_check.endpoints]
+anthropic = "https://api.anthropic.com/v1/messages"
+openai = "https://api.openai.com/v1/models"
+ollama = "http://localhost:11434/api/tags"

@@ -1,0 +1,35 @@
+# Build artifacts and logs
+*.log
+*.cache
+*.tmp
+.DS_Store
+
+# Runtime data
+data/logs/
+data/queues/*/
+data/sessions/
+data/cache/
+
+# Test artifacts  
+tests/tmp/
+tests/debug.log
+tests/*.log
+
+# Docker volumes and build cache
+.docker/
+docker-compose.override.yml
+
+# Development files
+.env
+.env.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store

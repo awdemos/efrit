@@ -1,0 +1,125 @@
+version: '3.8'
+
+services:
+  efrit-nu:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    image: efrit-nu:base
+    container_name: efrit-nu-main
+    volumes:
+      - ../data:/app/data
+      - ../config:/app/config:ro
+      - ../scripts:/app/scripts:ro
+    environment:
+      - EFRIT_LOG_LEVEL=info
+      - EFRIT_ENV=production
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nu", "-c", "source scripts/utils/config.nu; echo 'healthy'"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - efrit-net
+
+  efrit-nu-dev:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: efrit-nu:dev
+    container_name: efrit-nu-dev
+    volumes:
+      - ../:/workspace/efrit-nu
+      - ../data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock  # For container-in-container
+    environment:
+      - EFRIT_LOG_LEVEL=debug
+      - EFRIT_ENV=development
+      - EFRIT_HOT_RELOAD=true
+    ports:
+      - "8080:8080"  # Future web interface
+    stdin_open: true
+    tty: true
+    networks:
+      - efrit-net
+    profiles:
+      - dev
+
+  # Ollama service for local LLM
+  ollama:
+    image: ollama/ollama:latest
+    container_name: efrit-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    restart: unless-stopped
+    networks:
+      - efrit-net
+    profiles:
+      - ollama
+
+  # Redis for advanced queuing (future enhancement)
+  redis:
+    image: redis:7-alpine
+    container_name: efrit-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    networks:
+      - efrit-net
+    profiles:
+      - redis
+
+  # Prometheus for metrics collection
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: efrit-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+    restart: unless-stopped
+    networks:
+      - efrit-net
+    profiles:
+      - monitoring
+
+  # Grafana for metrics visualization
+  grafana:
+    image: grafana/grafana:latest
+    container_name: efrit-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    restart: unless-stopped
+    networks:
+      - efrit-net
+    profiles:
+      - monitoring
+
+networks:
+  efrit-net:
+    driver: bridge
+
+volumes:
+  ollama-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:

@@ -1,0 +1,46 @@
+# Efrit-Nu System Configuration
+
+[system]
+log_level = "info"
+max_concurrent_requests = 10
+request_timeout = 30
+session_ttl = 3600
+pid_file = "data/efrit-nu.pid"
+
+[queues]
+base_path = "data/queues"
+cleanup_interval = 300
+max_file_size = 1048576  # 1MB
+batch_size = 100
+poll_interval = 1  # seconds
+max_processing_time = 300  # 5 minutes
+
+[providers]
+default = "anthropic"
+timeout = 30
+retry_attempts = 3
+rate_limit_per_minute = 60
+config_file = "config/providers.toml"
+
+[tools]
+container_memory_limit = "512m"
+container_cpu_limit = "1.0"
+execution_timeout = 60
+network_isolation = true
+docker_image = "efrit-nu:tools"
+temp_dir = "/tmp/efrit-tools"
+
+[performance]
+cache_ttl = 300
+compression_level = "smart"
+enable_metrics = true
+metrics_retention_days = 30
+max_context_size = 100000  # characters
+work_log_max_entries = 50
+
+[security]
+enable_audit_log = true
+max_request_size = 10485760  # 10MB
+allowed_file_extensions = [".txt", ".md", ".json", ".yaml", ".toml", ".py", ".js", ".sh", ".nu"]
+forbidden_paths = ["/etc", "/sys", "/proc", "/dev"]
+container_user = "efrit"

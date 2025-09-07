@@ -1,0 +1,61 @@
+# Base runtime container for efrit-nu
+FROM ubuntu:22.04
+
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Update system and install dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    git \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    ca-certificates \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Nushell
+RUN curl -fsSL https://github.com/nushell/nushell/releases/download/0.107.0/nu-0.107.0-x86_64-unknown-linux-gnu.tar.gz | \
+    tar -xz -C /tmp && \
+    mv /tmp/nu-0.107.0-x86_64-unknown-linux-gnu/nu /usr/local/bin/ && \
+    chmod +x /usr/local/bin/nu && \
+    rm -rf /tmp/nu-*
+
+# Create efrit user for security
+RUN useradd -m -s /bin/bash -u 1000 efrit && \
+    echo "efrit ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+
+# Set up working directory
+WORKDIR /app
+RUN chown efrit:efrit /app
+
+# Copy efrit-nu scripts
+COPY scripts/ /app/scripts/
+COPY config/ /app/config/
+RUN chown -R efrit:efrit /app
+
+# Create data directories with proper permissions
+RUN mkdir -p /app/data/{queues/{requests,processing,responses,archive},sessions,logs,cache} && \
+    chown -R efrit:efrit /app/data
+
+# Switch to efrit user
+USER efrit
+
+# Set up Nushell configuration for efrit user
+RUN mkdir -p /home/efrit/.config/nushell && \
+    echo 'source /app/scripts/utils/config.nu' > /home/efrit/.config/nushell/env.nu && \
+    echo 'source /app/scripts/utils/logging.nu' > /home/efrit/.config/nushell/config.nu
+
+# Set environment variables
+ENV EFRIT_DATA_DIR=/app/data
+ENV EFRIT_CONFIG_DIR=/app/config
+ENV EFRIT_SCRIPTS_DIR=/app/scripts
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD nu -c "source scripts/utils/config.nu; echo 'healthy'"
+
+# Default command
+CMD ["nu", "-c", "source scripts/core/queue.nu; start-queue-processor"]
